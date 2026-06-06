@@ -1,0 +1,52 @@
+{
+  "name": "fsw_butt_joint_example",
+  "plate": {
+    "length": 200.0,
+    "width": 100.0,
+    "thickness": 5.0,
+    "gap": 0
+  },
+  "indentation": {
+    "radius": 6.0,
+    "length": 30.0,
+    "tilt_angle_deg": 1.0,
+    "depth": 0.4,
+    "pitch": 1.5,
+    "count": 32,
+    "x_start": 14.0
+  },
+  "void": {
+    "mode": "continuous",
+    "x_start": 40.0,
+    "x_end": 60.0,
+    "r_min": 0.15,
+    "r_max": 0.45,
+    "pitch": 0.3,
+    "depth": 2.0,
+    "y_offset": 3.0,
+    "y_scatter": 0.15,
+    "seed": 1
+  },
+  "render": {
+    "width": 1280,
+    "height": 960,
+    "samples": 128,
+    "camera_azimuth_deg": 45.0,
+    "camera_elevation_deg": 30.0,
+    "camera_margin": 1.15,
+    "background_color": [0.12, 0.12, 0.14],
+    "material": {
+      "base_color": [0.62, 0.64, 0.66],
+      "metallic": 1.0,
+      "roughness": 0.35,
+      "anisotropic": 0.6
+    }
+  },
+  "output": {
+    "basename": "fsw_part",
+    "export_step": true,
+    "export_stl": true,
+    "stl_tolerance": 0.01,
+    "stl_angular_tolerance": 0.1
+  }
+}

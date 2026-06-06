@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Generated artifacts (keep the directory, ignore its contents)
+outputs/*
+!outputs/.gitkeep
