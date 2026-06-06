@@ -78,34 +78,21 @@ class IndentConfig:
             raise ConfigError(f"indentation.count must be >= 1 (got {self.count})")
 
 
-_VOID_MODES = ("none", "continuous", "intermittent")
+_VOID_KINDS = ("continuous", "intermittent")
 
 
 @dataclass
-class VoidConfig:
-    """A surface void (defect) in the weld, simulated by a row of secondary
-    cylinders subtracted from the top surface.
+class VoidLayerConfig:
+    """Parameters for one surface-void defect class (continuous or intermittent).
 
-    The void runs along X from ``x_start`` to ``x_end``, with one cutter every
-    ``pitch`` mm. Each cutter has a random radius in [``r_min``, ``r_max``] and
-    cuts ``depth`` mm into the top surface. Voids typically sit on the
-    advancing side, so each cutter is offset in Y by ``y_offset`` (signed;
-    positive = advancing side) with a uniform +/- ``y_scatter`` jitter to mimic
-    real, irregular void paths.
-
-    Continuity is governed by the radius/pitch relationship:
-      - continuous:   neighbouring cutters always overlap. Ensure roughly
-                      ``pitch <= 2 * r_min`` (allowing for Y scatter), i.e. the
-                      minimum radius is on the order of the pitch.
-      - intermittent: neighbouring cutters never touch. Ensure
-                      ``2 * r_max < pitch`` so isolated voids are produced.
-
-    ``mode`` records the intent ("none" disables voids) and is used only for
-    light-touch validation warnings; the actual geometry follows the numeric
-    parameters. ``seed`` makes the random radii/scatter reproducible.
+    A row of vertical cylinders runs along X from ``x_start`` to ``x_end`` every
+    ``pitch`` mm. Each has a random radius in [``r_min``, ``r_max``] and a Y
+    centre of ``y_offset`` +/- ``y_scatter``. Continuity is governed by the
+    radius/pitch relationship (continuous: overlapping cutters; intermittent:
+    isolated pits). ``seed`` makes the layout reproducible for that layer.
     """
 
-    mode: str = "none"
+    enabled: bool = True
     x_start: float = 0.0
     x_end: float = 0.0
     r_min: float = 0.05
@@ -116,65 +103,99 @@ class VoidConfig:
     y_scatter: float = 0.5
     seed: int = 0
 
-    @property
-    def enabled(self) -> bool:
-        return self.mode != "none"
-
-    def validate(self, plate: PlateConfig) -> None:
-        if self.mode not in _VOID_MODES:
-            raise ConfigError(
-                f"void.mode must be one of {_VOID_MODES} (got '{self.mode}')"
-            )
+    def validate(self, plate: PlateConfig, label: str) -> None:
         if not self.enabled:
             return
+        prefix = f"void.{label}"
         if self.x_end <= self.x_start:
             raise ConfigError(
-                f"void.x_end ({self.x_end}) must be > void.x_start ({self.x_start})"
+                f"{prefix}.x_end ({self.x_end}) must be > {prefix}.x_start "
+                f"({self.x_start})"
             )
         if self.r_min <= 0:
-            raise ConfigError(f"void.r_min must be > 0 (got {self.r_min})")
+            raise ConfigError(f"{prefix}.r_min must be > 0 (got {self.r_min})")
         if self.r_max < self.r_min:
             raise ConfigError(
-                f"void.r_max ({self.r_max}) must be >= void.r_min ({self.r_min})"
+                f"{prefix}.r_max ({self.r_max}) must be >= {prefix}.r_min "
+                f"({self.r_min})"
             )
         if self.pitch <= 0:
-            raise ConfigError(f"void.pitch must be > 0 (got {self.pitch})")
+            raise ConfigError(f"{prefix}.pitch must be > 0 (got {self.pitch})")
         if self.depth <= 0:
-            raise ConfigError(f"void.depth must be > 0 (got {self.depth})")
+            raise ConfigError(f"{prefix}.depth must be > 0 (got {self.depth})")
         if self.depth >= plate.thickness:
             raise ConfigError(
-                f"void.depth ({self.depth}) must be < plate.thickness "
+                f"{prefix}.depth ({self.depth}) must be < plate.thickness "
                 f"({plate.thickness})"
             )
         if self.y_scatter < 0:
-            raise ConfigError(f"void.y_scatter must be >= 0 (got {self.y_scatter})")
+            raise ConfigError(
+                f"{prefix}.y_scatter must be >= 0 (got {self.y_scatter})"
+            )
+
+
+@dataclass
+class VoidConfig:
+    """Surface voids (weld defects) simulated by rows of subtracted cylinders.
+
+    A part may specify ``continuous`` voids (overlapping channel), ``intermittent``
+    voids (isolated pits), or both under ``void.continuous`` / ``void.intermittent``
+    in JSON. Legacy single-block configs with ``void.mode`` are still accepted.
+    """
+
+    continuous: VoidLayerConfig | None = None
+    intermittent: VoidLayerConfig | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            (self.continuous is not None and self.continuous.enabled)
+            or (self.intermittent is not None and self.intermittent.enabled)
+        )
+
+    def validate(self, plate: PlateConfig) -> None:
+        if self.continuous is not None:
+            self.continuous.validate(plate, "continuous")
+        if self.intermittent is not None:
+            self.intermittent.validate(plate, "intermittent")
+
+    def layers(self) -> list[tuple[str, VoidLayerConfig]]:
+        """Return enabled (kind, config) pairs in build order."""
+        out: list[tuple[str, VoidLayerConfig]] = []
+        if self.continuous is not None and self.continuous.enabled:
+            out.append(("continuous", self.continuous))
+        if self.intermittent is not None and self.intermittent.enabled:
+            out.append(("intermittent", self.intermittent))
+        return out
 
 
 @dataclass
 class FlashConfig:
-    """Weld flash: excess material added as a continuous bead on the advancing
-    side, built by unioning a row of tilted cylinders along X.
+    """Weld flash: excess material added as a continuous bead immediately
+    surrounding the weld on the advancing side, built by unioning a row of
+    tilted half-cylinders along X.
 
-    The bead runs from ``x_start`` to ``x_stop`` with one cylinder every
+    The bead runs from ``x_start`` to ``x_stop`` with one half-cylinder every
     ``pitch`` mm (small enough that neighbours always overlap, so the flash is
-    continuous - it is never intermittent). Each cylinder is centred at
-    ``y_offset`` (0 => auto = the indentation radius, i.e. the edge of the tool
-    path on the advancing side) and protrudes ``height`` mm above the top
-    surface. The bead radius ramps from zero up to ``flash_width`` and back down
-    to zero across the span, controlled by ``ramp_fraction`` (the fraction of
-    the span used for each ramp; 0.5 gives a triangular profile, smaller gives a
-    trapezoid with a flat plateau).
+    continuous - it is never intermittent). Each segment is a cylinder in the
+    **XY plane** with its top face at the plate top (Z = ``thickness``), centred
+    at the advancing-side weld edge (Y = ``indentation.radius``). The segment is
+    tilted about its own X axis by ``tilt_angle_deg``, lifting the outer (+Y)
+    half above the surface; only that half is kept so the flash hugs the weld
+    edge without overlapping the weld region. ``height`` is the segment depth
+    below the top face (along Z). Radius is ``flash_width`` plus a random +/-
+    ``radius_scatter`` per cylinder; ``seed`` makes the scatter reproducible.
     """
 
     enabled: bool = False
     x_start: float = 0.0
     x_stop: float = 0.0
     flash_width: float = 1.5
-    height: float = 0.5
-    pitch: float = 1.0
+    height: float = 1.0
+    pitch: float = 0.6
     tilt_angle_deg: float = 2.0
-    y_offset: float = 0.0
-    ramp_fraction: float = 0.3
+    radius_scatter: float = 0.3
+    seed: int = 0
 
     def validate(self, plate: PlateConfig) -> None:
         if not self.enabled:
@@ -189,12 +210,143 @@ class FlashConfig:
             raise ConfigError(f"flash.height must be > 0 (got {self.height})")
         if self.pitch <= 0:
             raise ConfigError(f"flash.pitch must be > 0 (got {self.pitch})")
-        if self.y_offset < 0:
-            raise ConfigError(f"flash.y_offset must be >= 0 (got {self.y_offset})")
-        if not (0.0 < self.ramp_fraction <= 0.5):
+        if self.tilt_angle_deg <= 0:
             raise ConfigError(
-                f"flash.ramp_fraction must be in (0, 0.5] (got {self.ramp_fraction})"
+                f"flash.tilt_angle_deg must be > 0 (got {self.tilt_angle_deg})"
             )
+        if self.radius_scatter < 0:
+            raise ConfigError(
+                f"flash.radius_scatter must be >= 0 (got {self.radius_scatter})"
+            )
+        if self.radius_scatter >= self.flash_width:
+            raise ConfigError(
+                f"flash.radius_scatter ({self.radius_scatter}) must be < "
+                f"flash.flash_width ({self.flash_width}) to keep radii positive"
+            )
+
+
+_BURS_MODES = ("attached", "loose")
+
+
+@dataclass
+class BurLayerConfig:
+    """Parameters for one bur defect class (attached or loose).
+
+    Burs are discontinuous, random events. Placement is sampled every
+    ``indentation.pitch`` mm along X from ``x_start`` to ``x_stop``; at each step
+    a bur appears independently with probability ``probability``. ``seed`` makes
+    the layout reproducible for that layer.
+    """
+
+    enabled: bool = True
+    x_start: float = 0.0
+    x_stop: float = 0.0
+    probability: float = 0.1
+    inner_radius_min: float = 4.0
+    inner_radius_max: float = 4.0
+    ring_width_min: float = 1.0
+    ring_width_max: float = 1.0
+    sector_angle_min: float = 90.0
+    sector_angle_max: float = 150.0
+    height_min: float = 0.1
+    height_max: float = 0.5
+    loose_y_offset: float = 3.0
+    loose_scatter: float = 1.5
+    seed: int = 0
+
+    def validate(self, plate: PlateConfig, label: str) -> None:
+        if not self.enabled:
+            return
+        prefix = f"burs.{label}"
+        if self.x_stop <= self.x_start:
+            raise ConfigError(
+                f"{prefix}.x_stop ({self.x_stop}) must be > {prefix}.x_start "
+                f"({self.x_start})"
+            )
+        if not 0.0 < self.probability <= 1.0:
+            raise ConfigError(
+                f"{prefix}.probability must be in (0, 1] (got {self.probability})"
+            )
+        if self.inner_radius_min <= 0:
+            raise ConfigError(
+                f"{prefix}.inner_radius_min must be > 0 (got {self.inner_radius_min})"
+            )
+        if self.inner_radius_max < self.inner_radius_min:
+            raise ConfigError(
+                f"{prefix}.inner_radius_max ({self.inner_radius_max}) must be >= "
+                f"{prefix}.inner_radius_min ({self.inner_radius_min})"
+            )
+        if self.ring_width_min <= 0:
+            raise ConfigError(
+                f"{prefix}.ring_width_min must be > 0 (got {self.ring_width_min})"
+            )
+        if self.ring_width_max < self.ring_width_min:
+            raise ConfigError(
+                f"{prefix}.ring_width_max ({self.ring_width_max}) must be >= "
+                f"{prefix}.ring_width_min ({self.ring_width_min})"
+            )
+        if self.sector_angle_min <= 0 or self.sector_angle_min > 360:
+            raise ConfigError(
+                f"{prefix}.sector_angle_min must be in (0, 360] "
+                f"(got {self.sector_angle_min})"
+            )
+        if self.sector_angle_max < self.sector_angle_min or self.sector_angle_max > 360:
+            raise ConfigError(
+                f"{prefix}.sector_angle_max ({self.sector_angle_max}) must be in "
+                f"[{prefix}.sector_angle_min, 360]"
+            )
+        if self.height_min <= 0:
+            raise ConfigError(
+                f"{prefix}.height_min must be > 0 (got {self.height_min})"
+            )
+        if self.height_max < self.height_min:
+            raise ConfigError(
+                f"{prefix}.height_max ({self.height_max}) must be >= "
+                f"{prefix}.height_min ({self.height_min})"
+            )
+        if label == "loose" and self.loose_scatter < 0:
+            raise ConfigError(
+                f"{prefix}.loose_scatter must be >= 0 (got {self.loose_scatter})"
+            )
+
+
+@dataclass
+class BursConfig:
+    """Weld burs: occasional curled chips of plasticized metal expelled at the
+    weld edge during friction stir welding.
+
+    A part may specify ``attached`` burs (chips clinging to the weld edge),
+    ``loose`` burs (detached chips on the plate), or both. Each class has its
+    own parameter block under ``burs.attached`` / ``burs.loose`` in JSON.
+
+    Legacy single-block configs with ``burs.mode`` set to ``attached`` or
+    ``loose`` are still accepted.
+    """
+
+    attached: BurLayerConfig | None = None
+    loose: BurLayerConfig | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            (self.attached is not None and self.attached.enabled)
+            or (self.loose is not None and self.loose.enabled)
+        )
+
+    def validate(self, plate: PlateConfig) -> None:
+        if self.attached is not None:
+            self.attached.validate(plate, "attached")
+        if self.loose is not None:
+            self.loose.validate(plate, "loose")
+
+    def layers(self) -> list[tuple[str, BurLayerConfig]]:
+        """Return enabled (mode, config) pairs in build order."""
+        out: list[tuple[str, BurLayerConfig]] = []
+        if self.attached is not None and self.attached.enabled:
+            out.append(("attached", self.attached))
+        if self.loose is not None and self.loose.enabled:
+            out.append(("loose", self.loose))
+        return out
 
 
 @dataclass
@@ -224,7 +376,7 @@ class RenderConfig:
     background_color: List[float] = field(default_factory=lambda: [0.05, 0.05, 0.06])
     material: MaterialConfig = field(default_factory=MaterialConfig)
     # Additional close-up "tool-mounted" render: a tilted top-down orthographic
-    # view centered on the weld (X = length/2), with a square window equal to
+    # view centered on the weld path midpoint, with a square window equal to
     # indentation.radius * tool_view_window_factor.
     tool_view: bool = True
     tool_view_window_factor: float = 2.0
@@ -269,6 +421,7 @@ class PartConfig:
     indentation: IndentConfig
     void: VoidConfig = field(default_factory=VoidConfig)
     flash: FlashConfig = field(default_factory=FlashConfig)
+    burs: BursConfig = field(default_factory=BursConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
@@ -277,6 +430,7 @@ class PartConfig:
         self.indentation.validate(self.plate)
         self.void.validate(self.plate)
         self.flash.validate(self.plate)
+        self.burs.validate(self.plate)
         self.render.validate()
         self.output.validate()
 
@@ -296,6 +450,67 @@ def _from_dict(cls, data: dict):
     return cls(**{k: v for k, v in data.items() if k in valid})
 
 
+def _load_voids(raw: dict) -> VoidConfig:
+    """Load void config, supporting both nested and legacy single-block formats."""
+    if not raw:
+        return VoidConfig()
+
+    # Legacy: { "mode": "continuous"|"intermittent"|"none", ...params }
+    if "mode" in raw:
+        mode = raw["mode"]
+        if mode == "none":
+            return VoidConfig()
+        if mode not in _VOID_KINDS:
+            raise ConfigError(
+                f"void.mode must be one of ('none',) + {_VOID_KINDS} (got '{mode}')"
+            )
+        layer = _from_dict(VoidLayerConfig, {k: v for k, v in raw.items() if k != "mode"})
+        if mode == "continuous":
+            return VoidConfig(continuous=layer)
+        return VoidConfig(intermittent=layer)
+
+    unknown = set(raw) - {"continuous", "intermittent"}
+    if unknown:
+        raise ConfigError(f"unknown field(s) for VoidConfig: {sorted(unknown)}")
+
+    continuous = (
+        _from_dict(VoidLayerConfig, raw["continuous"]) if "continuous" in raw else None
+    )
+    intermittent = (
+        _from_dict(VoidLayerConfig, raw["intermittent"]) if "intermittent" in raw else None
+    )
+    return VoidConfig(continuous=continuous, intermittent=intermittent)
+
+
+def _load_burs(raw: dict) -> BursConfig:
+    """Load burs config, supporting both nested and legacy single-block formats."""
+    if not raw:
+        return BursConfig()
+
+    # Legacy: { "mode": "attached"|"loose"|"none", ...params }
+    if "mode" in raw:
+        mode = raw["mode"]
+        if mode == "none":
+            return BursConfig()
+        if mode not in _BURS_MODES:
+            raise ConfigError(
+                f"burs.mode must be one of ('none',) + {_BURS_MODES} (got '{mode}')"
+            )
+        layer = _from_dict(BurLayerConfig, {k: v for k, v in raw.items() if k != "mode"})
+        if mode == "attached":
+            return BursConfig(attached=layer)
+        return BursConfig(loose=layer)
+
+    # Nested: { "attached": {...}, "loose": {...} }
+    unknown = set(raw) - {"attached", "loose"}
+    if unknown:
+        raise ConfigError(f"unknown field(s) for BursConfig: {sorted(unknown)}")
+
+    attached = _from_dict(BurLayerConfig, raw["attached"]) if "attached" in raw else None
+    loose = _from_dict(BurLayerConfig, raw["loose"]) if "loose" in raw else None
+    return BursConfig(attached=attached, loose=loose)
+
+
 def load_part_config(path: str | Path) -> PartConfig:
     """Load and validate a part configuration from a JSON file."""
     path = Path(path)
@@ -309,8 +524,9 @@ def load_part_config(path: str | Path) -> PartConfig:
 
     plate = _from_dict(PlateConfig, _require(raw, "plate", "root"))
     indentation = _from_dict(IndentConfig, _require(raw, "indentation", "root"))
-    void = _from_dict(VoidConfig, raw.get("void", {}))
+    void = _load_voids(raw.get("void", {}))
     flash = _from_dict(FlashConfig, raw.get("flash", {}))
+    burs = _load_burs(raw.get("burs", {}))
 
     render_raw = dict(raw.get("render", {}))
     material_raw = render_raw.pop("material", None)
@@ -326,6 +542,7 @@ def load_part_config(path: str | Path) -> PartConfig:
         indentation=indentation,
         void=void,
         flash=flash,
+        burs=burs,
         render=render,
         output=output,
     )

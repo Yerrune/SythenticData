@@ -5,11 +5,9 @@ from a JSON description, export it as STEP/STL, and produce a photorealistic
 ISO render. The renders are intended as synthetic training data for a weld
 quality monitoring vision system.
 
-The geometry is: two identical plates butted together with a seam gap, then a
-tilted cylinder is repeatedly subtracted along the weld line ("slice of apple"
-indentations) to create the characteristic repeated tool-mark ripples.
-Optionally, a **surface void** (weld defect) can be added on the advancing side
-- either a continuous channel or intermittent isolated pits.
+The geometry is built from a **base butt joint** plus optional weld-surface
+features: tool marks, surface voids, weld flash, and burs. Each feature type is
+described in [Weld feature types](#weld-feature-types) below.
 
 ## Pipeline
 
@@ -25,6 +23,169 @@ part JSON  ->  CadQuery solid  ->  STEP + STL  ->  Blender Cycles  ->  ISO rende
 - **X** = weld / travel direction (indentations advance along X by `pitch`).
 - **Y** = transverse direction (the two plates sit side by side, seam at Y=0).
 - **Z** = thickness (top surface at Z = `thickness`, bottom at Z = 0).
+
+Advancing side is **+Y** (to the right of the weld centreline when looking along
++X). Most defects and flash appear on this side, offset from the seam by
+`indentation.radius`.
+
+## Weld feature types
+
+Every part starts from the same base geometry. Optional features are toggled in
+JSON and combined freely (see [config/ButtJoint_1.json](config/ButtJoint_1.json)
+for a part with all feature types enabled at once).
+
+| Feature | JSON section | CAD operation | Real FSW analogue |
+| --- | --- | --- | --- |
+| Butt joint workpiece | `plate` | Base solid | Two plates joined at the seam |
+| Tool marks | `indentation` | Subtract (cut) | Repeated FSW probe indentations |
+| Continuous void | `void.continuous` | Subtract (cut) | Open surface channel / groove defect |
+| Intermittent void | `void.intermittent` | Subtract (cut) | Isolated surface pits / pinholes |
+| Weld flash | `flash` | Union (add) | Excess material squeezed out at weld edge |
+| Attached bur | `burs.attached` | Union (add) | Curled chip still clinging to weld edge |
+| Loose bur | `burs.loose` | Union (add) | Detached chip lying on plate near weld |
+
+Build order in `build_part`: workpiece minus tool marks and voids, then union
+flash and burs.
+
+### Butt joint workpiece (`plate`)
+
+Two identical rectangular plates are placed side by side, symmetric about
+**Y = 0**, with an optional transverse **seam gap** (`gap`). They are fused into
+one solid spanning **X** in `[0, length]`, **Z** in `[0, thickness]`. Each plate
+has width `width`; the full part width along Y is `2 * width + gap`.
+
+This is always present. All other features are applied on top of this base.
+
+### Tool marks (`indentation`)
+
+The characteristic FSW surface texture. A row of **tilted cylinders** is fused
+into one cutting tool and subtracted from the workpiece in a single boolean cut.
+
+Each cylinder has radius `radius` and length `length` (spanning the seam region
+along Y). It is extruded along +Z, then rotated about **Y** by
+`tilt_angle_deg` (tilt in the XZ plane). The cutter is positioned so the lowest
+point of its tilted base rim penetrates `depth` mm below the top surface
+(`Z = thickness`). Because the base is slightly tilted, only a **crescent** of
+material is removed per pass - the "slice of apple" tool mark.
+
+Cylinders are placed at `x_start + i * pitch` for `i = 0 ... count - 1`. Larger
+`pitch` leaves distinct ridges; smaller pitch makes marks overlap and smooth out.
+Larger `tilt_angle_deg`, `radius`, or `depth` make each mark more pronounced.
+
+Example: [config/example_part.json](config/example_part.json).
+
+### Surface void - continuous (`void.continuous`)
+
+A **surface groove defect** on the advancing side: a row of vertical cylinders
+subtracted from the top surface. Each cylinder has a random radius in
+`[r_min, r_max]` and a Y centre of `y_offset` +/- `y_scatter`. Cylinders are
+placed every `pitch` mm along X from `x_start` to `x_end`, penetrating `depth`
+below the top face.
+
+**Continuous** means neighbouring cutters **overlap** so the void reads as one
+open channel rather than separate holes. Design rule:
+
+```
+pitch <= 2 * r_min   (allow margin for y_scatter)
+```
+
+Each layer has its own `seed` for reproducible random radii and scatter. Multiple
+void layers (`continuous` and `intermittent`) can coexist in one part; their
+cutters are fused before subtraction.
+
+Example: [config/void_continuous.json](config/void_continuous.json).
+
+Real voids are often sub-millimetre; they appear small in a full-part ISO render.
+Use a lower `render.camera_margin`, the tool-mounted close-up, or crop to inspect
+them.
+
+### Surface void - intermittent (`void.intermittent`)
+
+Same cutter model as continuous voids, but tuned so neighbouring cylinders
+**never touch**, leaving **isolated pits** along the advancing side. Design rule:
+
+```
+2 * r_max < pitch
+```
+
+Use this for pinhole-like or spot void defects. Parameters and placement match
+the continuous void layer (`x_start`, `x_end`, `r_min`, `r_max`, `pitch`,
+`depth`, `y_offset`, `y_scatter`, `seed`).
+
+Example: [config/void_intermittent.json](config/void_intermittent.json).
+
+Legacy configs may use a single `void` block with `"mode": "continuous"` or
+`"intermittent"` instead of nested `void.continuous` / `void.intermittent`.
+
+### Weld flash (`flash`)
+
+**Excess material** squeezed out on the advancing side during welding, modelled
+as a continuous raised bead along the weld edge. Enabled with `"enabled": true`.
+
+Each segment is a **cylinder in the XY plane** with its top face at
+`Z = thickness`, centred at the advancing-side weld edge (`Y = indentation.radius`).
+The segment is extruded downward by `height`, then tilted about **its own X axis**
+(at the weld edge) by `tilt_angle_deg`. That tilt lifts the outer (+Y) half above
+the plate top; only that outer half is kept (clipped with a bounding box) so the
+flash hugs the weld edge without covering the weld region. Protrusion height
+comes from the tilt angle and segment radius, not from extruding above the top
+face.
+
+Segments are placed every `pitch` mm from `x_start` to `x_stop`. Neighbouring
+segments overlap (`pitch` should be small relative to `flash_width`) so the bead
+is one continuous solid. Each segment radius is `flash_width` plus random +/-
+`radius_scatter`; `seed` makes the edge irregularity reproducible.
+
+Example: [config/weld_flash.json](config/weld_flash.json).
+
+### Weld burs - attached (`burs.attached`)
+
+**Curled chips of plasticized metal** still clinging to the advancing-side weld
+edge - the material sometimes expelled as "flash" during FSW. Each bur is a flat
+**annulus sector** ("slice of a donut"): an arc between inner radius `inner_r`
+and outer radius `inner_r + ring_width`, spanning a random sector angle, drawn in
+the XY plane with its base at the plate top and extruded upward by a small random
+`height` (typically 0.1-0.5 mm).
+
+Burs are **discontinuous random events**. Along X from `x_start` to `x_stop`, the
+generator steps every `indentation.pitch` mm; at each step a bur appears with
+probability `probability`. For attached burs, the **start of the outer-ring arc**
+is anchored to the weld edge (`Y = indentation.radius`), so the chip sticks out
+from the seam. Inner/outer radii, ring width, sector angle, and height are each
+sampled uniformly from their min/max ranges; `seed` fixes the layout.
+
+Example: [config/burs_attached.json](config/burs_attached.json).
+
+### Weld burs - loose (`burs.loose`)
+
+Same annulus-sector geometry and random placement as attached burs, but the chip
+has **detached** from the weld and lies on the plate nearby. The sector centre is
+offset from the weld edge by `loose_y_offset` along Y, with uniform +/-
+`loose_scatter` jitter in both X and Y so chips land in a scattered band on the
+advancing side.
+
+Attached and loose bur layers can be combined in one config under
+`burs.attached` and `burs.loose`. Legacy single-block configs with
+`"mode": "attached"` or `"loose"` are still supported.
+
+Example: [config/burs_loose.json](config/burs_loose.json).
+
+### Combining features
+
+[config/ButtJoint_1.json](config/ButtJoint_1.json) demonstrates a long butt joint
+with tool marks along the full length and localized spans of continuous void,
+intermittent void, flash, attached burs, and loose burs at different X ranges.
+Use separate X spans and seeds per feature when building labelled training sets so
+each defect class can be identified independently.
+
+```bash
+python main.py config/ButtJoint_1.json
+python main.py config/void_continuous.json
+python main.py config/void_intermittent.json
+python main.py config/weld_flash.json
+python main.py config/burs_attached.json
+python main.py config/burs_loose.json
+```
 
 ## Setup
 
@@ -100,22 +261,22 @@ millimetres; angles in degrees.
 | | `pitch` | Spacing between successive indentations along X. |
 | | `count` | Number of indentations. |
 | | `x_start` | X position of the first indentation. |
-| `void` (optional) | `mode` | `none` (default, disabled), `continuous`, or `intermittent`. |
-| | `x_start`, `x_end` | X extent of the void along the weld. |
-| | `r_min`, `r_max` | Random cutter radius range (each cylinder is randomized). |
-| | `pitch` | Spacing between void cutter cylinders along X. |
-| | `depth` | Void penetration below the top surface (must be `< thickness`). |
-| | `y_offset` | Transverse offset toward the advancing side (signed; +Y by default). |
-| | `y_scatter` | Uniform +/- jitter on each cutter's Y position. |
-| | `seed` | RNG seed for reproducible radii/scatter. |
+| `void` (optional) | `continuous` | Continuous void layer (overlapping channel); omit or set `"enabled": false` to disable. |
+| | `intermittent` | Intermittent void layer (isolated pits); omit or set `"enabled": false` to disable. |
+| | *(per layer)* | `x_start`, `x_end`, `r_min`, `r_max`, `pitch`, `depth`, `y_offset`, `y_scatter`, `seed`. |
+| | *(legacy)* | Single block with `"mode": "continuous"` or `"intermittent"` still supported. |
 | `flash` (optional) | `enabled` | Add weld flash (excess material) on the advancing side. |
 | | `x_start`, `x_stop` | X extent of the flash bead. |
-| | `flash_width` | Maximum bead radius (lateral half-width); ramps to this and back to 0. |
-| | `height` | Maximum protrusion above the top surface. |
-| | `pitch` | Spacing of the bead cylinders along X (smaller = smoother). |
-| | `tilt_angle_deg` | Tilt of the bead cylinders in the XZ plane. |
-| | `y_offset` | Advancing-side Y position (0 => auto = `indentation.radius`). |
-| | `ramp_fraction` | Fraction of the span used to ramp up (and down); 0.5 = triangular. |
+| | `flash_width` | Mean bead radius in the XY plane. |
+| | `height` | Segment depth below the top face (along Z). |
+| | `pitch` | Spacing of segments along X (smaller = smoother bead). |
+| | `tilt_angle_deg` | Tilt about the segment X axis (>0); lifts the outer half above the plate top. |
+| | `radius_scatter` | Random +/- jitter on each cylinder radius (irregular outer edge); must be < `flash_width`. |
+| | `seed` | RNG seed for reproducible radius scatter. |
+| `burs` (optional) | `attached` | Attached bur layer (chip clings to weld edge); omit or set `"enabled": false` to disable. |
+| | `loose` | Loose bur layer (detached chip near weld); omit or set `"enabled": false` to disable. |
+| | *(per layer)* | `x_start`, `x_stop`, `probability`, `inner_radius_min/max`, `ring_width_min/max`, `sector_angle_min/max`, `height_min/max`, `seed`; loose also has `loose_y_offset`, `loose_scatter`. |
+| | *(legacy)* | Single block with `"mode": "attached"` or `"loose"` still supported. |
 | `render` | `width`, `height` | Output image resolution in pixels. |
 | | `samples` | Cycles render samples. |
 | | `camera_azimuth_deg` | Camera azimuth around Z (ISO view). |
@@ -131,48 +292,27 @@ millimetres; angles in degrees.
 
 ### Surface voids (weld defects)
 
-A void is a row of secondary cylinders subtracted from the top surface on the
-advancing side. Each cylinder gets a random radius in `[r_min, r_max]` and a Y
-position of `y_offset` +/- `y_scatter`, mimicking the irregular path of a real
-void. Whether the void is continuous or intermittent is governed by the
-radius/pitch relationship:
-
-- **Continuous** - neighbouring cutters always overlap into one channel. Keep
-  `pitch <= 2 * r_min` (allowing for `y_scatter`); i.e. the minimum radius is on
-  the order of the void pitch. See [config/void_continuous.json](config/void_continuous.json).
-- **Intermittent** - neighbouring cutters never touch, leaving isolated pits.
-  Keep `2 * r_max < pitch`. See [config/void_intermittent.json](config/void_intermittent.json).
-
-```bash
-python main.py config/void_continuous.json
-python main.py config/void_intermittent.json
-```
-
-Because real voids are sub-millimetre, they appear small when the whole part is
-framed; reduce `render.camera_margin` (or crop) to inspect them closely. The
-`seed` makes a given void layout reproducible for labelled datasets.
+See [Surface void - continuous](#surface-void---continuous-voidcontinuous) and
+[Surface void - intermittent](#surface-void---intermittent-voidintermittent) above.
+Two void classes may be combined under `void.continuous` and `void.intermittent`.
 
 ### Weld flash (excess material)
 
-Flash is excess metal squeezed out on the advancing side, forming a continuous
-raised layer. It is built by unioning a row of tilted cylinders along X (at
-`y = indentation.radius` by default), whose radius and height **ramp from zero
-up to `flash_width`/`height` and back to zero** across `[x_start, x_stop]`. The
-`pitch` is kept small enough that neighbouring cylinders always overlap, so the
-bead is a single continuous solid - it is never intermittent. See
-[config/weld_flash.json](config/weld_flash.json).
+See [Weld flash](#weld-flash-flash) above.
 
-```bash
-python main.py config/weld_flash.json
-```
+### Weld burs (curled metal chips)
+
+See [Weld burs - attached](#weld-burs---attached-bursattached) and
+[Weld burs - loose](#weld-burs---loose-bursloose) above.
 
 ### Tool-mounted close-up view
 
 In addition to the ISO render, each run produces `<basename>_toolview.png`: an
 **orthographic, tilted top-down** view as if a camera were mounted on the FSW
-tool looking down at the surface. It is centered on the plate (`X = length/2`,
-`Y = 0`), tilted about Y by `indentation.tilt_angle_deg` to mimic the tool tilt,
-and zoomed to a window of `indentation.radius * tool_view_window_factor` mm
+tool looking down at the surface. It is centered on the weld path midpoint
+(`X = x_start + (count - 1) * pitch / 2`, `Y = 0`), tilted about Y by
+`indentation.tilt_angle_deg` to mimic the tool tilt, and zoomed to a window of
+`indentation.radius * tool_view_window_factor` mm
 (default `radius * 2`). This gives a clear, repeatable close-up of the tool
 marks and any surface void - ideal as labelled training tiles. Disable it with
 `"tool_view": false` in the `render` section.
@@ -190,10 +330,13 @@ grazes across the ridges so the shallow relief casts highlights and shadows.
 ```
 main.py                     CLI entry point (orchestrates the pipeline)
 requirements.txt            CadQuery + numpy
-config/example_part.json    Example parametric part description (with a void)
+config/ButtJoint_1.json        Full example with all weld feature types
+config/example_part.json       Example part with a continuous void
 config/void_continuous.json   Example: continuous surface void
 config/void_intermittent.json Example: intermittent surface void
 config/weld_flash.json        Example: advancing-side weld flash
+config/burs_attached.json     Example: burs attached to the weld edge
+config/burs_loose.json        Example: loose burs near the weld
 src/weldgen/
   config.py                 Dataclasses + JSON load/validation
   geometry.py               CadQuery solid construction

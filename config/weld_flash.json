@@ -20,11 +20,11 @@
     "x_start": 20.0,
     "x_stop": 85.0,
     "flash_width": 1.6,
-    "height": 0.6,
+    "height": 1.0,
     "pitch": 0.6,
     "tilt_angle_deg": 2.0,
-    "y_offset": 0.0,
-    "ramp_fraction": 0.3
+    "radius_scatter": 0.4,
+    "seed": 1
   },
   "render": {
     "width": 1280,

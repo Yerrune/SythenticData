@@ -113,6 +113,9 @@ def render_part(
     tool_png_path: Path | None = None
     if render.tool_view and indentation is not None and plate is not None:
         tool_png_path = (out_dir / f"{basename}_toolview.png").resolve()
+        weld_center_x = (
+            indentation.x_start + (indentation.count - 1) * indentation.pitch / 2.0
+        )
         cfg["tool_view"] = {
             "enabled": True,
             "out_png": str(tool_png_path),
@@ -120,9 +123,10 @@ def render_part(
             "window_mm": indentation.radius * render.tool_view_window_factor,
             # Camera tilt mimics the tool tilt (XZ plane).
             "tilt_deg": indentation.tilt_angle_deg,
-            # Plate-top centre to look at, in original model (mm) coordinates.
-            "center_x": plate.length / 2.0,
+            # Weld-centre look-at point on the plate top, in model (mm) coords.
+            "center_x": weld_center_x,
             "center_y": 0.0,
+            "plate_top_z": plate.thickness,
         }
         expected.append(tool_png_path)
 

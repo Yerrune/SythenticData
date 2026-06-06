@@ -1,42 +1,33 @@
 {
-  "name": "fsw_butt_joint_example",
+  "name": "fsw_burs_attached",
   "plate": {
     "length": 100.0,
     "width": 40.0,
     "thickness": 5.0,
-    "gap": 0.2
+    "gap": 0.0
   },
   "indentation": {
-    "radius": 9.0,
+    "radius": 6.0,
     "length": 30.0,
-    "tilt_angle_deg": 6.0,
-    "depth": 0.2,
-    "pitch": 2.5,
-    "count": 32,
+    "tilt_angle_deg": 1.0,
+    "depth": 0.4,
+    "pitch": 1.5,
+    "count": 50,
     "x_start": 14.0
   },
-  "void": {
-    "continuous": {
-      "x_start": 40.0,
-      "x_end": 60.0,
-      "r_min": 0.25,
-      "r_max": 0.45,
-      "pitch": 0.3,
-      "depth": 0.6,
-      "y_offset": 3.0,
-      "y_scatter": 0.15,
-      "seed": 1
-    }
-  },
-  "flash": {
-    "enabled": true,
+  "burs": {
+    "mode": "attached",
     "x_start": 20.0,
-    "x_stop": 85.0,
-    "flash_width": 1.6,
-    "height": 1.0,
-    "pitch": 0.6,
-    "tilt_angle_deg": 2.0,
-    "radius_scatter": 0.4,
+    "x_stop": 90.0,
+    "probability": 0.1,
+    "inner_radius_min": 2.0,
+    "inner_radius_max": 4.0,
+    "ring_width_min": 0.5,
+    "ring_width_max": 1.0,
+    "sector_angle_min": 30.0,
+    "sector_angle_max": 150.0,
+    "height_min": 0.1,
+    "height_max": 0.3,
     "seed": 1
   },
   "render": {
@@ -55,10 +46,10 @@
     }
   },
   "output": {
-    "basename": "fsw_part",
+    "basename": "fsw_burs_attached",
     "export_step": true,
     "export_stl": true,
-    "stl_tolerance": 0.01,
+    "stl_tolerance": 0.008,
     "stl_angular_tolerance": 0.1
   }
 }

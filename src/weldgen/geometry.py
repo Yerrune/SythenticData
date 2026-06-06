@@ -18,7 +18,16 @@ import random
 
 import cadquery as cq
 
-from .config import FlashConfig, IndentConfig, PartConfig, PlateConfig, VoidConfig
+from .config import (
+    BurLayerConfig,
+    BursConfig,
+    FlashConfig,
+    IndentConfig,
+    PartConfig,
+    PlateConfig,
+    VoidConfig,
+    VoidLayerConfig,
+)
 
 
 def build_workpiece(plate: PlateConfig) -> cq.Workplane:
@@ -75,56 +84,44 @@ def build_cutters(indent: IndentConfig, thickness: float) -> cq.Workplane:
     return cutters
 
 
-def build_voids(void: VoidConfig, thickness: float) -> cq.Workplane | None:
-    """Build the fused surface-void cutter, or ``None`` if voids are disabled.
-
-    A row of vertical cylinders runs along X from ``x_start`` to ``x_end`` every
-    ``pitch`` mm. Each has a random radius in [``r_min``, ``r_max``] and a Y
-    centre of ``y_offset`` +/- ``y_scatter`` (the advancing-side offset with
-    physical jitter). Each cylinder cuts ``depth`` mm into the top surface.
-
-    Whether the result is a continuous channel or isolated pits depends purely
-    on the radius/pitch relationship (see ``VoidConfig``); the same code path
-    serves both the "continuous" and "intermittent" modes.
-    """
-    if not void.enabled:
-        return None
-
-    rng = random.Random(void.seed)
-    span = void.x_end - void.x_start
-    steps = int(math.floor(span / void.pitch + 1e-9)) + 1
+def _build_void_layer(layer: VoidLayerConfig, thickness: float) -> cq.Workplane | None:
+    """Build cutters for one void layer (continuous or intermittent)."""
+    rng = random.Random(layer.seed)
+    span = layer.x_end - layer.x_start
+    steps = int(math.floor(span / layer.pitch + 1e-9)) + 1
 
     cutters: cq.Workplane | None = None
     for i in range(steps):
-        x_i = void.x_start + i * void.pitch
-        radius = rng.uniform(void.r_min, void.r_max)
-        y_i = void.y_offset + rng.uniform(-void.y_scatter, void.y_scatter)
-        # Vertical cylinder breaking the top surface: its base sits at
-        # z = thickness - depth and it extrudes up through the surface.
+        x_i = layer.x_start + i * layer.pitch
+        radius = rng.uniform(layer.r_min, layer.r_max)
+        y_i = layer.y_offset + rng.uniform(-layer.y_scatter, layer.y_scatter)
         cyl = (
             cq.Workplane("XY")
             .circle(radius)
-            .extrude(void.depth + 1.0)
-            .translate((x_i, y_i, thickness - void.depth))
+            .extrude(layer.depth + 1.0)
+            .translate((x_i, y_i, thickness - layer.depth))
         )
         cutters = cyl if cutters is None else cutters.union(cyl)
 
     return cutters
 
 
-def _flash_ramp(t: float, ramp_fraction: float) -> float:
-    """Trapezoidal ramp: 0 at the ends, 1 across the plateau.
+def build_voids(void: VoidConfig, thickness: float) -> cq.Workplane | None:
+    """Build the fused surface-void cutter, or ``None`` if voids are disabled.
 
-    Rises linearly over the first ``ramp_fraction`` of the span and falls
-    linearly over the last ``ramp_fraction``; flat in between.
+    Each enabled layer (``continuous`` and/or ``intermittent``) is built
+    independently and fused into a single cutting tool.
     """
-    if t <= 0.0 or t >= 1.0:
-        return 0.0
-    if t < ramp_fraction:
-        return t / ramp_fraction
-    if t > 1.0 - ramp_fraction:
-        return (1.0 - t) / ramp_fraction
-    return 1.0
+    if not void.enabled:
+        return None
+
+    result: cq.Workplane | None = None
+    for _kind, layer in void.layers():
+        cutters = _build_void_layer(layer, thickness)
+        if cutters is None:
+            continue
+        result = cutters if result is None else result.union(cutters)
+    return result
 
 
 def build_flash(
@@ -132,49 +129,183 @@ def build_flash(
 ) -> cq.Workplane | None:
     """Build the weld flash bead, or ``None`` if flash is disabled.
 
-    A row of tilted cylinders is fused along X on the advancing side. The bead
-    radius ramps from zero up to ``flash_width`` and back to zero across the
-    span, so the flash always tapers in and out. Each cylinder extends from the
-    plate bottom up to ``thickness + height``, so unioning it with the part adds
-    a continuous raised layer of excess material above the top surface.
+    Each segment is a cylinder drawn in the **XY plane** with its top face at the
+    plate top (Z = ``thickness``), centred at the advancing-side weld edge
+    (Y = ``indentation.radius``). The segment is tilted about its own X axis by
+    ``tilt_angle_deg``, lifting the outer (+Y) half above the surface; only that
+    half is kept so the flash hugs the weld edge without overlapping the weld
+    region. ``height`` is the segment depth below the top face (along Z).
     """
     if not flash.enabled:
         return None
 
     thickness = plate.thickness
-    y0 = flash.y_offset if flash.y_offset > 0 else indentation.radius
+    y_inner = indentation.radius  # advancing-side weld edge; flash starts here
     span = flash.x_stop - flash.x_start
     steps = int(math.floor(span / flash.pitch + 1e-9)) + 1
-    # Drop cylinders too small to overlap their neighbour; this keeps the bead a
-    # single continuous solid (never intermittent) while still tapering to near
-    # zero at the very ends.
-    min_radius = flash.pitch / 2.0
+    rng = random.Random(flash.seed)
+
+    max_radius = flash.flash_width + flash.radius_scatter
+    tilt = math.radians(flash.tilt_angle_deg)
+    embed = 0.05  # slight embed below top for a robust union with the plate
+    # Outer rim of the tilted top face rises to roughly z = thickness + R*sin(tilt).
+    z_protrusion = max_radius * math.sin(tilt) + max_radius * (1.0 - math.cos(tilt))
 
     bead: cq.Workplane | None = None
     for i in range(steps):
         x_i = flash.x_start + i * flash.pitch
-        t = (x_i - flash.x_start) / span if span > 0 else 0.0
-        factor = _flash_ramp(t, flash.ramp_fraction)
-        radius = flash.flash_width * factor
-        if radius < min_radius:
-            continue
-        # Both width (radius) and protrusion height ramp together so the bead
-        # rises smoothly from the surface and falls back to it.
-        cap_height = flash.height * factor
+        radius = flash.flash_width + rng.uniform(-flash.radius_scatter, flash.radius_scatter)
+        radius = max(radius, 0.05)
+        # Circle in the XY plane; top face at the plate top, extruded downward.
+        # Tilt about the segment's own X axis (through the weld edge on the top
+        # surface) so the advancing-side (+Y) half rises above z = thickness.
         cyl = (
             cq.Workplane("XY")
+            .workplane(offset=thickness)
+            .center(x_i, y_inner)
             .circle(radius)
-            .extrude(thickness + cap_height)
-            .rotate((0, 0, 0), (0, 1, 0), flash.tilt_angle_deg)
-            .translate((x_i, y0, 0.0))
+            .extrude(-(flash.height + embed))
+            .rotate(
+                (x_i, y_inner, thickness),
+                (x_i + 1.0, y_inner, thickness),
+                flash.tilt_angle_deg,
+            )
         )
         bead = cyl if bead is None else bead.union(cyl)
 
-    return bead
+    if bead is None:
+        return None
+
+    # Keep only the outer half (Y >= weld edge) so flash never covers the weld.
+    keep_len_x = span + 2.0 * max_radius + 2.0
+    keep_len_y = max_radius + 1.0
+    keep_len_z = flash.height + embed + z_protrusion + 1.0
+    keep = (
+        cq.Workplane("XY")
+        .box(keep_len_x, keep_len_y, keep_len_z)
+        .translate((
+            (flash.x_start + flash.x_stop) / 2.0,
+            y_inner + keep_len_y / 2.0,
+            thickness + z_protrusion / 2.0 - flash.height / 2.0,
+        ))
+    )
+    return bead.intersect(keep)
+
+
+# Small vertical overlap so a bur's flat base fuses cleanly into the plate top
+# instead of resting on a coincident face (which can break boolean unions).
+_BUR_EMBED = 0.05
+
+
+def _annulus_sector_solid(
+    center: tuple[float, float],
+    inner_r: float,
+    outer_r: float,
+    start_deg: float,
+    span_deg: float,
+    z_base: float,
+    height: float,
+) -> cq.Workplane:
+    """A flat annulus sector ("slice of a donut") lying in the XY plane.
+
+    The sector is centred at ``center = (cx, cy)``, drawn between ``inner_r`` and
+    ``outer_r`` over the angular span ``[start_deg, start_deg + span_deg]``, with
+    its base in the plane ``Z = z_base`` and extruded upward by ``height``.
+    """
+    cx, cy = center
+    a1 = math.radians(start_deg)
+    a2 = math.radians(start_deg + span_deg)
+    am = (a1 + a2) / 2.0
+
+    def pt(r: float, angle: float) -> tuple[float, float]:
+        return (cx + r * math.cos(angle), cy + r * math.sin(angle))
+
+    return (
+        cq.Workplane("XY", origin=(0.0, 0.0, z_base))
+        .moveTo(*pt(inner_r, a1))
+        .lineTo(*pt(outer_r, a1))
+        .threePointArc(pt(outer_r, am), pt(outer_r, a2))
+        .lineTo(*pt(inner_r, a2))
+        .threePointArc(pt(inner_r, am), pt(inner_r, a1))
+        .close()
+        .extrude(height)
+    )
+
+
+def _build_bur_layer(
+    mode: str,
+    layer: BurLayerConfig,
+    indentation: IndentConfig,
+    plate: PlateConfig,
+) -> cq.Workplane | None:
+    """Build burs for one defect class (``attached`` or ``loose``)."""
+    thickness = plate.thickness
+    y_inner = indentation.radius
+    span_x = layer.x_stop - layer.x_start
+    steps = int(math.floor(span_x / indentation.pitch + 1e-9)) + 1
+    rng = random.Random(layer.seed)
+
+    chips: cq.Workplane | None = None
+    for i in range(steps):
+        if rng.random() >= layer.probability:
+            continue
+
+        x_i = layer.x_start + i * indentation.pitch
+        inner_r = rng.uniform(layer.inner_radius_min, layer.inner_radius_max)
+        ring_width = rng.uniform(layer.ring_width_min, layer.ring_width_max)
+        outer_r = inner_r + ring_width
+        sector_span = rng.uniform(layer.sector_angle_min, layer.sector_angle_max)
+        start_deg = rng.uniform(0.0, 360.0)
+        height = rng.uniform(layer.height_min, layer.height_max)
+
+        if mode == "attached":
+            a1 = math.radians(start_deg)
+            cx = x_i - outer_r * math.cos(a1)
+            cy = y_inner - outer_r * math.sin(a1)
+        else:
+            cx = x_i + rng.uniform(-layer.loose_scatter, layer.loose_scatter)
+            cy = (
+                y_inner
+                + layer.loose_y_offset
+                + rng.uniform(-layer.loose_scatter, layer.loose_scatter)
+            )
+
+        chip = _annulus_sector_solid(
+            (cx, cy),
+            inner_r,
+            outer_r,
+            start_deg,
+            sector_span,
+            z_base=thickness - _BUR_EMBED,
+            height=height + _BUR_EMBED,
+        )
+        chips = chip if chips is None else chips.union(chip)
+
+    return chips
+
+
+def build_burs(
+    burs: BursConfig, indentation: IndentConfig, plate: PlateConfig
+) -> cq.Workplane | None:
+    """Build weld burs, or ``None`` if burs are disabled.
+
+    Each enabled layer (``attached`` and/or ``loose``) is built independently
+    and fused into a single solid.
+    """
+    if not burs.enabled:
+        return None
+
+    result: cq.Workplane | None = None
+    for mode, layer in burs.layers():
+        chips = _build_bur_layer(mode, layer, indentation, plate)
+        if chips is None:
+            continue
+        result = chips if result is None else result.union(chips)
+    return result
 
 
 def build_part(part: PartConfig) -> cq.Workplane:
-    """Build the full part: workpiece minus indentations/voids, plus flash."""
+    """Build the full part: workpiece minus indentations/voids, plus flash/burs."""
     workpiece = build_workpiece(part.plate)
     cutters = build_cutters(part.indentation, part.plate.thickness)
     result = workpiece.cut(cutters)
@@ -186,4 +317,8 @@ def build_part(part: PartConfig) -> cq.Workplane:
     flash = build_flash(part.flash, part.indentation, part.plate)
     if flash is not None:
         result = result.union(flash)
+
+    burs = build_burs(part.burs, part.indentation, part.plate)
+    if burs is not None:
+        result = result.union(burs)
     return result

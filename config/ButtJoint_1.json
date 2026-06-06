@@ -1,7 +1,7 @@
 {
   "name": "fsw_butt_joint_example",
   "plate": {
-    "length": 200.0,
+    "length": 300.0,
     "width": 100.0,
     "thickness": 5.0,
     "gap": 0
@@ -12,20 +12,75 @@
     "tilt_angle_deg": 1.0,
     "depth": 0.4,
     "pitch": 1.5,
-    "count": 32,
-    "x_start": 14.0
+    "count": 400,
+    "x_start": 20.0
   },
   "void": {
-    "mode": "continuous",
-    "x_start": 40.0,
-    "x_end": 60.0,
-    "r_min": 0.15,
-    "r_max": 0.45,
-    "pitch": 0.3,
-    "depth": 2.0,
-    "y_offset": 3.0,
-    "y_scatter": 0.15,
+    "continuous": {
+      "x_start": 200.0,
+      "x_end": 240.0,
+      "r_min": 0.15,
+      "r_max": 0.45,
+      "pitch": 0.3,
+      "depth": 2.0,
+      "y_offset": 3.0,
+      "y_scatter": 0.2,
+      "seed": 1
+    },
+    "intermittent": {
+      "x_start": 70.0,
+      "x_end": 120.0,
+      "r_min": 0.3,
+      "r_max": 0.6,
+      "pitch": 2.0,
+      "depth": 0.6,
+      "y_offset": 3.0,
+      "y_scatter": 0.5,
+      "seed": 2
+    }
+  },
+  "flash": {
+    "enabled": true,
+    "x_start": 160.0,
+    "x_stop": 220.0,
+    "flash_width": 2.0,
+    "height": 0.5,
+    "pitch": 0.6,
+    "tilt_angle_deg": 5.0,
+    "radius_scatter": 1,
     "seed": 1
+  },
+  "burs": {
+    "attached": {
+      "x_start": 80.0,
+      "x_stop": 160.0,
+      "probability": 0.1,
+      "inner_radius_min": 2.0,
+      "inner_radius_max": 4.0,
+      "ring_width_min": 0.5,
+      "ring_width_max": 1.0,
+      "sector_angle_min": 30.0,
+      "sector_angle_max": 150.0,
+      "height_min": 0.1,
+      "height_max": 0.3,
+      "seed": 1
+    },
+    "loose": {
+      "x_start": 20.0,
+      "x_stop": 80.0,
+      "probability": 0.2,
+      "inner_radius_min": 2.0,
+      "inner_radius_max": 5.0,
+      "ring_width_min": 0.1,
+      "ring_width_max": 1.0,
+      "sector_angle_min": 90.0,
+      "sector_angle_max": 150.0,
+      "height_min": 0.1,
+      "height_max": 0.3,
+      "loose_y_offset": 3.0,
+      "loose_scatter": 10,
+      "seed": 2
+    }
   },
   "render": {
     "width": 1280,

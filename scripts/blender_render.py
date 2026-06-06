@@ -144,6 +144,7 @@ def add_ground(center, mins, radius, color):
     bpy.ops.mesh.primitive_plane_add(size=radius * 12.0,
                                      location=(center[0], center[1], mins[2]))
     ground = bpy.context.view_layer.objects.active
+    ground.name = "Ground"
     mat = bpy.data.materials.new("Ground")
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
@@ -191,6 +192,10 @@ def setup_tool_camera(target, window_norm, tilt_deg):
     The camera looks straight down (-Z) rotated about Y by ``tilt_deg`` to mimic
     the FSW tool tilt. ``window_norm`` is the orthographic window size (the
     larger image dimension) in normalized scene units.
+
+    Orthographic views are centred on the camera origin, so the camera is placed
+    above ``target`` in plan view and ``shift_x`` compensates for the XZ-plane
+    tilt so the weld centre stays in frame.
     """
     cam_data = bpy.data.cameras.new("ToolCam")
     cam_data.type = "ORTHO"
@@ -202,15 +207,47 @@ def setup_tool_camera(target, window_norm, tilt_deg):
     bpy.context.collection.objects.link(cam)
 
     t = math.radians(tilt_deg)
-    distance = max(window_norm * 4.0, 5.0)
+    distance = window_norm * 4.0
     target = mathutils.Vector(target)
-    # View direction for euler (0, t, 0) is (-sin t, 0, -cos t); place the
-    # camera back along it so ``target`` stays centered in frame.
-    cam.location = target + mathutils.Vector(
-        (math.sin(t) * distance, 0.0, math.cos(t) * distance)
-    )
-    cam.rotation_euler = (0.0, t, 0.0)
+    # Stay above the target in plan view; tilt about Y through the camera.
+    cam.location = target + mathutils.Vector((0.0, 0.0, distance))
+    cam.rotation_euler = (0.0, -t, 0.0)
+    # Tilt moves the plate intersection off-centre in X; shift brings target back.
+    if window_norm > 0:
+        cam.data.shift_x = (distance * math.tan(t)) / window_norm
     return cam
+
+
+def prepare_tool_view_scene(ground):
+    """Hide the ISO ground plane and dim the world for the close-up render."""
+    if ground is not None:
+        ground.hide_render = True
+    world = bpy.context.scene.world
+    if world and world.use_nodes:
+        bg = world.node_tree.nodes.get("Background")
+        bg.inputs["Color"].default_value = (0.08, 0.08, 0.09, 1.0)
+        bg.inputs["Strength"].default_value = 0.25
+
+
+def setup_tool_lighting(target, window_norm):
+    """Reconfigure area lights for the close-up tool view.
+
+    A low, transverse key light grazes across the shallow tool-mark ridges so
+    the orthographic top-down view shows curved arc highlights.
+    """
+    for obj in list(bpy.data.objects):
+        if obj.type == "LIGHT" and obj.name in ("Key", "Fill", "Rim"):
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+    t = mathutils.Vector(target)
+    w = max(window_norm, 1e-6)
+    # Low key from +Y rakes across transverse ridges; keep fill dim for contrast.
+    add_area_light("Key", t + mathutils.Vector((0.0, w * 2.2, w * 0.06)),
+                   tuple(t), 1400.0, w * 1.0)
+    add_area_light("Fill", t + mathutils.Vector((-w * 1.5, -w * 1.0, w * 0.12)),
+                   tuple(t), 60.0, w * 1.6)
+    add_area_light("Rim", t + mathutils.Vector((w * 0.6, -w * 2.0, w * 0.04)),
+                   tuple(t), 700.0, w * 0.7)
 
 
 def configure_render(cfg):
@@ -260,7 +297,7 @@ def main():
     obj.data.materials.append(mat)
 
     setup_lighting(tuple(center), radius, cfg["background_color"])
-    add_ground(tuple(center), mins, radius, cfg["background_color"])
+    ground = add_ground(tuple(center), mins, radius, cfg["background_color"])
     configure_render(cfg)
 
     # ISO perspective view of the whole part.
@@ -270,12 +307,15 @@ def main():
     # Optional tool-mounted close-up: tilted top-down view of the weld centre.
     tv = cfg.get("tool_view")
     if tv and tv.get("enabled"):
+        plate_top_z = tv.get("plate_top_z", maxs.z / factor + orig_center[2])
         target = (
             (tv["center_x"] - orig_center[0]) * factor,
             (tv["center_y"] - orig_center[1]) * factor,
-            maxs.z,
+            (plate_top_z - orig_center[2]) * factor,
         )
         window_norm = tv["window_mm"] * factor
+        prepare_tool_view_scene(ground)
+        setup_tool_lighting(target, window_norm)
         tool_cam = setup_tool_camera(target, window_norm, tv["tilt_deg"])
         render_to(tool_cam, tv["out_png"])
 
