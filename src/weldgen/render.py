@@ -114,19 +114,27 @@ def render_part(
     if render.tool_view and indentation is not None and plate is not None:
         tool_png_path = (out_dir / f"{basename}_toolview.png").resolve()
         weld_center_x = (
-            indentation.x_start + (indentation.count - 1) * indentation.pitch / 2.0
+            indentation.x_start + indentation.count * indentation.pitch / 2.0
         )
         cfg["tool_view"] = {
             "enabled": True,
             "out_png": str(tool_png_path),
             # Square window centered on the weld; size = radius * factor (mm).
             "window_mm": indentation.radius * render.tool_view_window_factor,
-            # Camera tilt mimics the tool tilt (XZ plane).
-            "tilt_deg": indentation.tilt_angle_deg,
+            # Oblique top-down view in the tool ZYX convention.
+            "camera_tilt_deg": render.tool_view_camera_tilt_deg,
+            "camera_height_mm": render.tool_view_camera_height_mm,
             # Weld-centre look-at point on the plate top, in model (mm) coords.
             "center_x": weld_center_x,
             "center_y": 0.0,
             "plate_top_z": plate.thickness,
+            # Brushed/cast metal overrides for the close-up render.
+            "material": {
+                "base_color": list(render.material.base_color),
+                "metallic": render.tool_view_metallic,
+                "roughness": render.tool_view_roughness,
+                "anisotropic": render.tool_view_anisotropic,
+            },
         }
         expected.append(tool_png_path)
 

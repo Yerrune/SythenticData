@@ -92,16 +92,23 @@ def world_bounds(obj):
     return mins, maxs
 
 
-def make_metal_material(mat_cfg):
-    mat = bpy.data.materials.new("FSW_Metal")
+def make_metal_material(mat_cfg, name="FSW_Metal"):
+    mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     color = mat_cfg["base_color"]
     bsdf.inputs["Base Color"].default_value = (color[0], color[1], color[2], 1.0)
     bsdf.inputs["Metallic"].default_value = mat_cfg["metallic"]
     bsdf.inputs["Roughness"].default_value = mat_cfg["roughness"]
+    if "Specular IOR Level" in bsdf.inputs:
+        bsdf.inputs["Specular IOR Level"].default_value = 0.35
+    elif "Specular" in bsdf.inputs:
+        bsdf.inputs["Specular"].default_value = 0.35
     if "Anisotropic" in bsdf.inputs:
         bsdf.inputs["Anisotropic"].default_value = mat_cfg["anisotropic"]
+    if "Anisotropic Rotation" in bsdf.inputs:
+        # Brush strokes run along the weld / travel direction (world +X).
+        bsdf.inputs["Anisotropic Rotation"].default_value = 0.0
     return mat
 
 
@@ -186,68 +193,120 @@ def setup_camera(center, radius, cfg):
     return cam
 
 
-def setup_tool_camera(target, window_norm, tilt_deg):
-    """Orthographic 'tool-mounted' camera: a tilted top-down view of ``target``.
+def setup_tool_camera(target, camera_pos, window_norm, camera_tilt_deg):
+    """Orthographic close-up camera for the tool-mounted weld view.
 
-    The camera looks straight down (-Z) rotated about Y by ``tilt_deg`` to mimic
-    the FSW tool tilt. ``window_norm`` is the orthographic window size (the
-    larger image dimension) in normalized scene units.
+    Camera pose follows the tool-view convention supplied by the caller:
 
-    Orthographic views are centred on the camera origin, so the camera is placed
-    above ``target`` in plan view and ``shift_x`` compensates for the XZ-plane
-    tilt so the weld centre stays in frame.
+    * Position is always ``(center_x, 0, height)`` in model coordinates.
+    * Orientation uses ZYX Euler ``(0, 180 - tilt, 0)`` with the camera
+      viewing axis taken as local +Z.  That maps to Blender ZYX ``(0, tilt, 90)``
+      so the image X axis is parallel to the part Y axis and a 30-degree tilt
+      is visibly oblique rather than face-on.
+
+    ``window_norm`` is the orthographic window size (the larger image dimension)
+    in normalized scene units.
     """
     cam_data = bpy.data.cameras.new("ToolCam")
     cam_data.type = "ORTHO"
     cam_data.ortho_scale = window_norm
-    cam_data.clip_start = 0.0001
-    cam_data.clip_end = 10000.0
+    cam_data.clip_start = 0.001
+    cam_data.clip_end = 1000.0
 
     cam = bpy.data.objects.new("ToolCam", cam_data)
     bpy.context.collection.objects.link(cam)
 
-    t = math.radians(tilt_deg)
-    distance = window_norm * 4.0
     target = mathutils.Vector(target)
-    # Stay above the target in plan view; tilt about Y through the camera.
-    cam.location = target + mathutils.Vector((0.0, 0.0, distance))
-    cam.rotation_euler = (0.0, -t, 0.0)
-    # Tilt moves the plate intersection off-centre in X; shift brings target back.
-    if window_norm > 0:
-        cam.data.shift_x = (distance * math.tan(t)) / window_norm
+    cam.location = mathutils.Vector(camera_pos)
+    cam.rotation_mode = "ZYX"
+    # Tool-view ZYX (0, 180, 0) down / (0, 150, 0) at 30 deg -> Blender (0, tilt, 90).
+    cam.rotation_euler = (
+        0.0,
+        math.radians(camera_tilt_deg),
+        math.radians(90.0),
+    )
+    bpy.context.view_layer.update()
+
+    # Recentre the weld point in the orthographic frame. With a fixed (non
+    # look-at) orientation the target sits far off the optical axis, so it must
+    # be pulled back with lens shift. Solve the linear shift -> NDC mapping
+    # numerically; this is robust to Blender's sensor-fit / aspect conventions
+    # (vertical NDC scales with aspect^2, which trips up closed-form formulas).
+    from bpy_extras.object_utils import world_to_camera_view
+
+    scene = bpy.context.scene
+
+    def _ndc(sx, sy):
+        cam.data.shift_x = sx
+        cam.data.shift_y = sy
+        bpy.context.view_layer.update()
+        v = world_to_camera_view(scene, cam, target)
+        return v.x, v.y
+
+    base = _ndc(0.0, 0.0)
+    dxr = _ndc(1.0, 0.0)
+    dyr = _ndc(0.0, 1.0)
+    kx = dxr[0] - base[0]
+    ky = dyr[1] - base[1]
+    shift_x = (0.5 - base[0]) / kx if abs(kx) > 1e-9 else 0.0
+    shift_y = (0.5 - base[1]) / ky if abs(ky) > 1e-9 else 0.0
+    cam.data.shift_x = shift_x
+    cam.data.shift_y = shift_y
+    bpy.context.view_layer.update()
     return cam
 
 
 def prepare_tool_view_scene(ground):
-    """Hide the ISO ground plane and dim the world for the close-up render."""
+    """Hide the ISO ground plane and use a soft ambient world for the close-up."""
     if ground is not None:
         ground.hide_render = True
     world = bpy.context.scene.world
     if world and world.use_nodes:
         bg = world.node_tree.nodes.get("Background")
-        bg.inputs["Color"].default_value = (0.08, 0.08, 0.09, 1.0)
-        bg.inputs["Strength"].default_value = 0.25
+        bg.inputs["Color"].default_value = (0.20, 0.21, 0.23, 1.0)
+        bg.inputs["Strength"].default_value = 0.22
 
 
-def setup_tool_lighting(target, window_norm):
-    """Reconfigure area lights for the close-up tool view.
+def setup_tool_lighting(target, camera_pos, window_norm):
+    """Grazing 'raking' light that reveals the shallow weld ring relief.
 
-    A low, transverse key light grazes across the shallow tool-mark ridges so
-    the orthographic top-down view shows curved arc highlights.
+    The crescent tool marks run transverse (part Y) and repeat along the travel
+    direction (part X). A low-elevation key light raking along +X throws a thin
+    shadow off each ridge so the rings read clearly on the metal. A dim overhead
+    fill from the camera side and a weak opposite rake keep the valleys from
+    going black without flattening the directional contrast.
     """
     for obj in list(bpy.data.objects):
-        if obj.type == "LIGHT" and obj.name in ("Key", "Fill", "Rim"):
+        if obj.type == "LIGHT":
             bpy.data.objects.remove(obj, do_unlink=True)
 
     t = mathutils.Vector(target)
+    cam = mathutils.Vector(camera_pos)
     w = max(window_norm, 1e-6)
-    # Low key from +Y rakes across transverse ridges; keep fill dim for contrast.
-    add_area_light("Key", t + mathutils.Vector((0.0, w * 2.2, w * 0.06)),
-                   tuple(t), 1400.0, w * 1.0)
-    add_area_light("Fill", t + mathutils.Vector((-w * 1.5, -w * 1.0, w * 0.12)),
-                   tuple(t), 60.0, w * 1.6)
-    add_area_light("Rim", t + mathutils.Vector((w * 0.6, -w * 2.0, w * 0.04)),
-                   tuple(t), 700.0, w * 0.7)
+    # Energies scale with window area so brightness is independent of weld size.
+    intensity = (w / 1.0) ** 2
+
+    # Small, dim overhead fill: just lifts the valleys. Kept small so its
+    # specular reflection in the metal does not wash out the ring relief.
+    add_area_light("ToolFill", cam.copy(), tuple(t), 3.0 * intensity, w * 2.0)
+
+    # Two opposing low grazing rakes (~11 deg) along +/-X rake across the ring
+    # ridges; near-balanced energies light both faces of each crescent arc so
+    # the onion-ring pattern reads across the whole weld footprint.
+    add_area_light(
+        "ToolRakeKey",
+        t + mathutils.Vector((w * 5.0, 0.0, w * 1.0)),
+        tuple(t),
+        60.0 * intensity,
+        w * 1.2,
+    )
+    add_area_light(
+        "ToolRakeBack",
+        t + mathutils.Vector((-w * 5.0, 0.0, w * 1.0)),
+        tuple(t),
+        44.0 * intensity,
+        w * 1.2,
+    )
 
 
 def configure_render(cfg):
@@ -308,15 +367,31 @@ def main():
     tv = cfg.get("tool_view")
     if tv and tv.get("enabled"):
         plate_top_z = tv.get("plate_top_z", maxs.z / factor + orig_center[2])
+        center_x = tv["center_x"]
+        center_y = tv.get("center_y", 0.0)
+        camera_height_mm = tv.get("camera_height_mm", plate_top_z + 50.0)
         target = (
-            (tv["center_x"] - orig_center[0]) * factor,
-            (tv["center_y"] - orig_center[1]) * factor,
+            (center_x - orig_center[0]) * factor,
+            (center_y - orig_center[1]) * factor,
             (plate_top_z - orig_center[2]) * factor,
+        )
+        camera_pos = (
+            (center_x - orig_center[0]) * factor,
+            (center_y - orig_center[1]) * factor,
+            (camera_height_mm - orig_center[2]) * factor,
         )
         window_norm = tv["window_mm"] * factor
         prepare_tool_view_scene(ground)
-        setup_tool_lighting(target, window_norm)
-        tool_cam = setup_tool_camera(target, window_norm, tv["tilt_deg"])
+        setup_tool_lighting(target, camera_pos, window_norm)
+        tool_mat_cfg = {**cfg["material"], **tv.get("material", {})}
+        obj.data.materials.clear()
+        obj.data.materials.append(make_metal_material(tool_mat_cfg, "FSW_Metal_ToolView"))
+        tool_cam = setup_tool_camera(
+            target,
+            camera_pos,
+            window_norm,
+            tv.get("camera_tilt_deg", 0.0),
+        )
         render_to(tool_cam, tv["out_png"])
 
 

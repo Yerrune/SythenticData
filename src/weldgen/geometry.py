@@ -146,16 +146,21 @@ def build_flash(
     rng = random.Random(flash.seed)
 
     max_radius = flash.flash_width + flash.radius_scatter
-    tilt = math.radians(flash.tilt_angle_deg)
+    max_tilt = math.radians(flash.tilt_angle_deg + flash.tilt_angle_scatter)
     embed = 0.05  # slight embed below top for a robust union with the plate
     # Outer rim of the tilted top face rises to roughly z = thickness + R*sin(tilt).
-    z_protrusion = max_radius * math.sin(tilt) + max_radius * (1.0 - math.cos(tilt))
+    z_protrusion = max_radius * math.sin(max_tilt) + max_radius * (
+        1.0 - math.cos(max_tilt)
+    )
 
     bead: cq.Workplane | None = None
     for i in range(steps):
         x_i = flash.x_start + i * flash.pitch
         radius = flash.flash_width + rng.uniform(-flash.radius_scatter, flash.radius_scatter)
         radius = max(radius, 0.05)
+        tilt_deg = flash.tilt_angle_deg + rng.uniform(
+            -flash.tilt_angle_scatter, flash.tilt_angle_scatter
+        )
         # Circle in the XY plane; top face at the plate top, extruded downward.
         # Tilt about the segment's own X axis (through the weld edge on the top
         # surface) so the advancing-side (+Y) half rises above z = thickness.
@@ -168,7 +173,7 @@ def build_flash(
             .rotate(
                 (x_i, y_inner, thickness),
                 (x_i + 1.0, y_inner, thickness),
-                flash.tilt_angle_deg,
+                tilt_deg,
             )
         )
         bead = cyl if bead is None else bead.union(cyl)

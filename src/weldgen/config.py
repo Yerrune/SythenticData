@@ -184,7 +184,8 @@ class FlashConfig:
     half above the surface; only that half is kept so the flash hugs the weld
     edge without overlapping the weld region. ``height`` is the segment depth
     below the top face (along Z). Radius is ``flash_width`` plus a random +/-
-    ``radius_scatter`` per cylinder; ``seed`` makes the scatter reproducible.
+    ``radius_scatter`` per cylinder; tilt is ``tilt_angle_deg`` plus random +/-
+    ``tilt_angle_scatter`` per cylinder; ``seed`` makes the scatter reproducible.
     """
 
     enabled: bool = False
@@ -194,6 +195,7 @@ class FlashConfig:
     height: float = 1.0
     pitch: float = 0.6
     tilt_angle_deg: float = 2.0
+    tilt_angle_scatter: float = 0.0
     radius_scatter: float = 0.3
     seed: int = 0
 
@@ -213,6 +215,15 @@ class FlashConfig:
         if self.tilt_angle_deg <= 0:
             raise ConfigError(
                 f"flash.tilt_angle_deg must be > 0 (got {self.tilt_angle_deg})"
+            )
+        if self.tilt_angle_scatter < 0:
+            raise ConfigError(
+                f"flash.tilt_angle_scatter must be >= 0 (got {self.tilt_angle_scatter})"
+            )
+        if self.tilt_angle_scatter >= self.tilt_angle_deg:
+            raise ConfigError(
+                f"flash.tilt_angle_scatter ({self.tilt_angle_scatter}) must be < "
+                f"flash.tilt_angle_deg ({self.tilt_angle_deg}) to keep tilts positive"
             )
         if self.radius_scatter < 0:
             raise ConfigError(
@@ -377,9 +388,19 @@ class RenderConfig:
     material: MaterialConfig = field(default_factory=MaterialConfig)
     # Additional close-up "tool-mounted" render: a tilted top-down orthographic
     # view centered on the weld path midpoint, with a square window equal to
-    # indentation.radius * tool_view_window_factor.
+    # indentation.radius * tool_view_window_factor (default 4x gives weld
+    # footprint diameter = 2*radius and field width = 4*radius).
     tool_view: bool = True
-    tool_view_window_factor: float = 2.0
+    tool_view_window_factor: float = 4.0
+    # Viewing angle from vertical-down (ZYX Y=180 in the tool-view convention;
+    # 0 = straight down, 30 = oblique view with Blender ZYX (0, 30, 90)).
+    tool_view_camera_tilt_deg: float = 30.0
+    # Camera standoff along +Z in model coordinates (Y is always 0).
+    tool_view_camera_height_mm: float = 100.0
+    # Brushed/cast metal appearance for the close-up (avoids mirror hotspots).
+    tool_view_roughness: float = 0.72
+    tool_view_metallic: float = 0.55
+    tool_view_anisotropic: float = 0.0
 
     def validate(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -390,6 +411,22 @@ class RenderConfig:
             raise ConfigError("render.background_color must have 3 components")
         if self.tool_view_window_factor <= 0:
             raise ConfigError("render.tool_view_window_factor must be > 0")
+        if not 0.0 <= self.tool_view_camera_tilt_deg < 90.0:
+            raise ConfigError(
+                "render.tool_view_camera_tilt_deg must be in [0, 90) "
+                f"(got {self.tool_view_camera_tilt_deg})"
+            )
+        if self.tool_view_camera_height_mm <= 0:
+            raise ConfigError(
+                "render.tool_view_camera_height_mm must be > 0 "
+                f"(got {self.tool_view_camera_height_mm})"
+            )
+        if not 0.0 <= self.tool_view_roughness <= 1.0:
+            raise ConfigError("render.tool_view_roughness must be in [0, 1]")
+        if not 0.0 <= self.tool_view_metallic <= 1.0:
+            raise ConfigError("render.tool_view_metallic must be in [0, 1]")
+        if not 0.0 <= self.tool_view_anisotropic <= 1.0:
+            raise ConfigError("render.tool_view_anisotropic must be in [0, 1]")
         self.material.validate()
 
 

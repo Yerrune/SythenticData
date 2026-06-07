@@ -1,8 +1,8 @@
 {
   "name": "fsw_butt_joint_example",
   "plate": {
-    "length": 350.0,
-    "width": 100.0,
+    "length": 100.0,
+    "width": 50.0,
     "thickness": 5.0,
     "gap": 0
   },
@@ -11,14 +11,14 @@
     "length": 30.0,
     "tilt_angle_deg": 1.0,
     "depth": 0.4,
-    "pitch": 1.5,
-    "count": 200,
+    "pitch": 1,
+    "count": 50,
     "x_start": 20.0
   },
   "void": {
     "continuous": {
-      "x_start": 200.0,
-      "x_end": 240.0,
+      "x_start": 45.0,
+      "x_end": 60.0,
       "r_min": 0.15,
       "r_max": 0.45,
       "pitch": 0.3,
@@ -28,8 +28,8 @@
       "seed": 1
     },
     "intermittent": {
-      "x_start": 70.0,
-      "x_end": 120.0,
+      "x_start": 20.0,
+      "x_end": 40.0,
       "r_min": 0.1,
       "r_max": 0.3,
       "pitch": 2.0,
@@ -41,8 +41,8 @@
   },
   "flash": {
     "enabled": true,
-    "x_start": 160.0,
-    "x_stop": 220.0,
+    "x_start": 40.0,
+    "x_stop": 70.0,
     "flash_width": 2.0,
     "height": 0.5,
     "pitch": 0.6,
@@ -53,34 +53,18 @@
   },
   "burs": {
     "attached": {
-      "x_start": 80.0,
-      "x_stop": 160.0,
-      "probability": 0.1,
-      "inner_radius_min": 2.0,
-      "inner_radius_max": 4.0,
-      "ring_width_min": 0.5,
-      "ring_width_max": 1.0,
-      "sector_angle_min": 30.0,
-      "sector_angle_max": 150.0,
-      "height_min": 0.1,
-      "height_max": 0.3,
-      "seed": 1
-    },
-    "loose": {
       "x_start": 20.0,
-      "x_stop": 80.0,
+      "x_stop": 40.0,
       "probability": 0.2,
-      "inner_radius_min": 2.0,
-      "inner_radius_max": 5.0,
-      "ring_width_min": 0.1,
-      "ring_width_max": 1.0,
-      "sector_angle_min": 90.0,
-      "sector_angle_max": 150.0,
+      "inner_radius_min": 4.0,
+      "inner_radius_max": 6.0,
+      "ring_width_min": 0.2,
+      "ring_width_max": 0.5,
+      "sector_angle_min": 60.0,
+      "sector_angle_max": 100.0,
       "height_min": 0.1,
-      "height_max": 0.3,
-      "loose_y_offset": 3.0,
-      "loose_scatter": 10,
-      "seed": 2
+      "height_max": 0.2,
+      "seed": 1
     }
   },
   "render": {
@@ -101,7 +85,7 @@
     }
   },
   "output": {
-    "basename": "fsw_allfeatures",
+    "basename": "fsw_short",
     "export_step": true,
     "export_stl": true,
     "stl_tolerance": 0.01,
